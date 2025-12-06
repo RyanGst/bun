@@ -735,4 +735,126 @@ const server = serve({
       .env(bunEnv)
       .throws(true);
   });
+
+  itBundled("compile/CopyFileFromEmbeddedFile", {
+    compile: true,
+    assetNaming: "[name].[ext]",
+    files: {
+      "/entry.ts": /* js */ `
+        import { copyFileSync, readFileSync, rmSync, existsSync } from 'fs';
+        import embeddedPath from './data.txt' with { type: 'file' };
+
+        // Remove data.txt from filesystem to verify we're reading from the embedded bundle
+        rmSync('./data.txt', { force: true });
+
+        // Copy embedded file to a new location
+        const destPath = './copied-data.txt';
+        copyFileSync(embeddedPath, destPath);
+
+        // Verify the copy worked
+        if (!existsSync(destPath)) throw new Error('Copy failed: destination does not exist');
+
+        const content = readFileSync(destPath, 'utf8');
+        if (content.trim() !== 'Hello from embedded file!') {
+          throw new Error('Copy failed: content mismatch - got: ' + content);
+        }
+
+        console.log('fs.copyFile from embedded file: OK');
+      `,
+      "/data.txt": "Hello from embedded file!",
+    },
+    run: { stdout: "fs.copyFile from embedded file: OK", setCwd: true },
+  });
+
+  itBundled("compile/CopyFileAsyncFromEmbeddedFile", {
+    compile: true,
+    assetNaming: "[name].[ext]",
+    files: {
+      "/entry.ts": /* js */ `
+        import { copyFile, readFile, rm } from 'fs/promises';
+        import { existsSync } from 'fs';
+        import embeddedPath from './data.txt' with { type: 'file' };
+
+        // Remove data.txt from filesystem to verify we're reading from the embedded bundle
+        await rm('./data.txt', { force: true });
+
+        // Copy embedded file to a new location using async API
+        const destPath = './copied-data-async.txt';
+        await copyFile(embeddedPath, destPath);
+
+        // Verify the copy worked
+        if (!existsSync(destPath)) throw new Error('Copy failed: destination does not exist');
+
+        const content = await readFile(destPath, 'utf8');
+        if (content.trim() !== 'Async embedded content!') {
+          throw new Error('Copy failed: content mismatch - got: ' + content);
+        }
+
+        console.log('fs.copyFile async from embedded file: OK');
+      `,
+      "/data.txt": "Async embedded content!",
+    },
+    run: { stdout: "fs.copyFile async from embedded file: OK", setCwd: true },
+  });
+
+  itBundled("compile/CpFromEmbeddedFile", {
+    compile: true,
+    assetNaming: "[name].[ext]",
+    files: {
+      "/entry.ts": /* js */ `
+        import { cpSync, readFileSync, rmSync, existsSync } from 'fs';
+        import embeddedPath from './source.dat' with { type: 'file' };
+
+        // Remove source.dat from filesystem to verify we're reading from the embedded bundle
+        rmSync('./source.dat', { force: true });
+
+        // Copy embedded file using fs.cp (single file mode)
+        const destPath = './dest.dat';
+        cpSync(embeddedPath, destPath);
+
+        // Verify the copy worked
+        if (!existsSync(destPath)) throw new Error('cp failed: destination does not exist');
+
+        const content = readFileSync(destPath, 'utf8');
+        if (content.trim() !== 'Data from cp test') {
+          throw new Error('cp failed: content mismatch - got: ' + content);
+        }
+
+        console.log('fs.cp from embedded file: OK');
+      `,
+      "/source.dat": "Data from cp test",
+    },
+    run: { stdout: "fs.cp from embedded file: OK", setCwd: true },
+  });
+
+  itBundled("compile/CpAsyncFromEmbeddedFile", {
+    compile: true,
+    assetNaming: "[name].[ext]",
+    files: {
+      "/entry.ts": /* js */ `
+        import { cp, rm } from 'fs/promises';
+        import { readFileSync, existsSync } from 'fs';
+        import embeddedPath from './async-source.dat' with { type: 'file' };
+
+        // Remove source file from filesystem to verify we're reading from the embedded bundle
+        await rm('./async-source.dat', { force: true });
+
+        // Copy embedded file using async fs.cp (single file mode)
+        const destPath = './async-dest.dat';
+        await cp(embeddedPath, destPath);
+
+        // Verify the copy worked
+        if (!existsSync(destPath)) throw new Error('async cp failed: destination does not exist');
+
+        const content = readFileSync(destPath, 'utf8');
+        if (content.trim() !== 'Async cp test data') {
+          throw new Error('async cp failed: content mismatch - got: ' + content);
+        }
+
+        console.log('fs.cp async from embedded file: OK');
+      `,
+      "/async-source.dat": "Async cp test data",
+    },
+    run: { stdout: "fs.cp async from embedded file: OK", setCwd: true },
+  });
 });

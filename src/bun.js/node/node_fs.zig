@@ -712,6 +712,27 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             const src = args.src.osPath(&src_buf);
             const dest = args.dest.osPath(&dest_buf);
 
+            // Check if source is an embedded file in a standalone executable
+            if (bun.StandaloneModuleGraph.get()) |graph| {
+                const src_slice = if (Environment.isWindows) brk: {
+                    var path_buf: bun.PathBuffer = undefined;
+                    break :brk bun.strings.fromWPath(&path_buf, src);
+                } else src;
+                if (graph.find(src_slice)) |file| {
+                    // Embedded files cannot be directories, so copy directly
+                    const copy_mode: constants.Copyfile = @enumFromInt(if (args.flags.errorOnExist or !args.flags.force) constants.COPYFILE_EXCL else @as(u8, 0));
+                    const r = NodeFS.copyEmbeddedFileToDestination(dest, file.contents, copy_mode);
+                    if (r == .err and r.err.errno == @intFromEnum(E.EXIST) and !args.flags.errorOnExist) {
+                        this.onCopy(src, dest);
+                        this.finishConcurrently(.success);
+                        return;
+                    }
+                    this.onCopy(src, dest);
+                    this.finishConcurrently(r);
+                    return;
+                }
+            }
+
             if (Environment.isWindows) {
                 const attributes = c.GetFileAttributesW(src);
                 if (attributes == c.INVALID_FILE_ATTRIBUTES) {
@@ -3498,6 +3519,51 @@ pub const NodeFS = struct {
         return .success;
     }
 
+    /// Copy embedded file contents to a destination path.
+    /// Used for copying files from standalone executables.
+    fn copyEmbeddedFileToDestination(
+        dest: bun.OSPathSliceZ,
+        contents: []const u8,
+        mode: constants.Copyfile,
+    ) Maybe(Return.CopyFile) {
+        const ret = Maybe(Return.CopyFile);
+        var flags: i32 = bun.O.CREAT | bun.O.WRONLY | bun.O.TRUNC;
+        if (mode.shouldntOverwrite()) {
+            flags |= bun.O.EXCL;
+        }
+
+        const dest_fd = switch (Syscall.open(dest, flags, default_permission)) {
+            .result => |result| result,
+            .err => |err| return .{ .err = err },
+        };
+        defer dest_fd.close();
+
+        var buf = contents;
+        var written: usize = 0;
+
+        while (buf.len > 0) {
+            switch (bun.sys.write(dest_fd, buf)) {
+                .err => |err| return .{ .err = err },
+                .result => |amt| {
+                    buf = buf[amt..];
+                    written += amt;
+                    if (amt == 0) {
+                        break;
+                    }
+                },
+            }
+        }
+
+        // Truncate to exact size written
+        if (Environment.isWindows) {
+            _ = bun.windows.SetEndOfFile(dest_fd.cast());
+        } else {
+            _ = Syscall.ftruncate(dest_fd, @intCast(@as(u63, @truncate(written))));
+        }
+
+        return ret.success;
+    }
+
     pub fn copyFile(this: *NodeFS, args: Arguments.CopyFile, _: Flavor) Maybe(Return.CopyFile) {
         return switch (this.copyFileInner(args)) {
             .result => .success,
@@ -3516,6 +3582,22 @@ pub const NodeFS = struct {
     /// https://github.com/nodejs/node/issues/34624
     fn copyFileInner(fs: *NodeFS, args: Arguments.CopyFile) Maybe(Return.CopyFile) {
         const ret = Maybe(Return.CopyFile);
+
+        // Check if source is an embedded file in a standalone executable
+        if (bun.StandaloneModuleGraph.get()) |graph| {
+            if (graph.find(args.src.slice())) |file| {
+                // Cannot clone an embedded file
+                if (args.mode.isForceClone()) {
+                    return Maybe(Return.CopyFile){ .err = .{
+                        .errno = @intFromEnum(SystemErrno.ENOTSUP),
+                        .syscall = .copyfile,
+                    } };
+                }
+                var dest_buf: bun.PathBuffer = undefined;
+                const dest = args.dest.sliceZ(&dest_buf);
+                return copyEmbeddedFileToDestination(dest, file.contents, args.mode);
+            }
+        }
 
         // TODO: do we need to fchown?
         if (comptime Environment.isMac) {
@@ -6013,6 +6095,23 @@ pub const NodeFS = struct {
         const cp_flags = args.flags;
         const src = src_buf[0..src_dir_len :0];
         const dest = dest_buf[0..dest_dir_len :0];
+
+        // Check if source is an embedded file in a standalone executable
+        if (bun.StandaloneModuleGraph.get()) |graph| {
+            const src_slice = if (Environment.isWindows) brk: {
+                var path_buf: bun.PathBuffer = undefined;
+                break :brk bun.strings.fromWPath(&path_buf, src);
+            } else src;
+            if (graph.find(src_slice)) |file| {
+                // Embedded files cannot be directories, so copy directly
+                const copy_mode: constants.Copyfile = @enumFromInt(if (cp_flags.errorOnExist or !cp_flags.force) constants.COPYFILE_EXCL else @as(u8, 0));
+                const r = copyEmbeddedFileToDestination(dest, file.contents, copy_mode);
+                if (r == .err and r.err.errno == @intFromEnum(E.EXIST) and !cp_flags.errorOnExist) {
+                    return .success;
+                }
+                return r;
+            }
+        }
 
         if (Environment.isWindows) {
             const attributes = c.GetFileAttributesW(src);
